@@ -35,6 +35,10 @@ function normalizeKey(value) {
   return String(value || "").trim().toUpperCase().replace(/\s+/g, "");
 }
 
+function normalizeAccount(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 function hash(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
@@ -183,7 +187,11 @@ function findLicenseForClient(body) {
   if (license.deviceIdHash && license.deviceIdHash !== hash(deviceId)) {
     return { license, error: "This license is already activated on another device." };
   }
-  return { license, deviceId };
+  const accountId = String(body.userName || "").trim();
+  if (license.userName && accountId && normalizeAccount(license.userName) !== normalizeAccount(accountId)) {
+    return { license, error: "This license is already bound to another SkillRack account." };
+  }
+  return { license, deviceId, accountId };
 }
 
 async function activateLicense(body) {
@@ -206,7 +214,7 @@ async function validateLicense(body) {
   const reason = licenseState(license);
   if (reason === "active") {
     license.lastUsedAt = nowIso();
-    if (body.userName) license.userName = String(body.userName).trim().slice(0, 120);
+    if (result.accountId && !license.userName) license.userName = result.accountId.slice(0, 120);
     await persistState();
   }
   return {

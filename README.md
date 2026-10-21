@@ -26,6 +26,21 @@ If you later use a custom domain instead of `*.vercel.app`, add that domain to `
 
 The extension talks to the Vercel API, while only the Vercel API talks to Supabase.
 
+### If the dashboard says `public.usage_events` is missing
+
+Run this check in Supabase SQL Editor:
+
+```sql
+select to_regclass('public.licenses'), to_regclass('public.usage_events');
+```
+
+If either value is `null`, run `supabase/schema.sql` for a fresh database. If your existing `licenses.id` column is `int8`/`bigint` like the original table, run `supabase/fix-existing-bigint.sql` instead. If both tables exist, make sure the `public` schema is exposed in Supabase's Data API settings, then refresh the schema cache:
+
+```sql
+NOTIFY pgrst, 'reload schema';
+NOTIFY pgrst, 'reload config';
+```
+
 ## Local fallback
 
 From the extension folder:
@@ -49,8 +64,8 @@ The default token is `dev-admin-token` for local testing only. The server binds 
 
 1. Open the dashboard and generate a license.
 2. Copy the generated key into the extension popup.
-3. Enter the user's name and activate it.
-4. The extension validates the license before opening the helper and before protected actions.
+3. Activate it with the license key only. When the user opens a SkillRack page, the extension reads the visible logged-in account chip and binds the license to that account.
+4. The extension validates the account-bound license before opening the helper and before protected actions. A different SkillRack account is rejected.
 5. Successful and failed extension Run actions are recorded as `programsSolved` and `programsDone`.
 6. Lock or unlock a license from the dashboard. A locked license is blocked on the next validation.
 
