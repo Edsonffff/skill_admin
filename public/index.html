@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SkillRack Helper Admin</title>
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">LOCAL ADMIN CONSOLE</p>
+        <h1>License control center</h1>
+        <p class="subtle">Create licenses, see helper usage, and lock or unlock access.</p>
+      </div>
+      <div id="server-status" class="pill">Checking server…</div>
+    </header>
+
+    <section id="login-card" class="card login-card">
+      <h2>Admin sign in</h2>
+      <p class="subtle">Use the ADMIN_TOKEN configured when the local server was started.</p>
+      <form id="login-form" class="inline-form">
+        <input id="admin-token" type="password" autocomplete="current-password" placeholder="Admin token" required>
+        <button type="submit">Open dashboard</button>
+      </form>
+      <p id="login-error" class="error"></p>
+    </section>
+
+    <div id="dashboard" hidden>
+      <section class="stats-grid">
+        <article class="stat card"><span>Programs done</span><strong id="programs-done">0</strong></article>
+        <article class="stat card"><span>Programs solved</span><strong id="programs-solved">0</strong></article>
+        <article class="stat card"><span>Active licenses</span><strong id="active-licenses">0</strong></article>
+        <article class="stat card"><span>Locked licenses</span><strong id="locked-licenses">0</strong></article>
+      </section>
+
+      <section class="card">
+        <div class="section-heading"><div><h2>Create license</h2><p class="subtle">The generated key is shown once. Copy it into the extension popup.</p></div></div>
+        <form id="create-form" class="create-form">
+          <label>Expires on<input id="expires-at" type="date" required></label>
+          <button type="submit">Generate license</button>
+        </form>
+        <div id="new-key" class="new-key" hidden></div>
+        <p id="create-error" class="error"></p>
+      </section>
+
+      <section class="card">
+        <div class="section-heading"><div><h2>Licenses</h2><p class="subtle">Locking a license blocks the extension the next time it validates.</p></div><button id="refresh" class="secondary">Refresh</button></div>
+        <div class="table-wrap"><table><thead><tr><th>User</th><th>Key</th><th>Status</th><th>Expires</th><th>Done</th><th>Solved</th><th>Last used</th><th>Action</th></tr></thead><tbody id="licenses-body"></tbody></table></div>
+      </section>
+      <p id="dashboard-error" class="error"></p>
+    </div>
+  </main>
+  <script src="/admin.js"></script>
+</body>
+</html>
