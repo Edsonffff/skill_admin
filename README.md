@@ -7,16 +7,19 @@ This folder contains the Vercel-hosted license API and admin dashboard used by t
 Set the Vercel project root to this `admin-dashboard` folder. Vercel automatically deploys functions inside the root `api` directory and serves the static files in `public`.
 
 1. Create a Supabase project.
-2. For a fresh project, open Supabase SQL Editor and run `supabase/schema.sql`. For the existing project shown in the screenshot, run `supabase/migrate-usage-summary.sql` instead. Back up first and pause the old usage writer during cutover.
+2. For a fresh project, open Supabase SQL Editor and run `supabase/schema.sql`. For the existing project shown in the screenshot, run `supabase/migrate-usage-summary.sql` and then `supabase/migrate-session-auth.sql`. Back up first and pause the old usage writer during cutover.
 3. Create Vercel environment variables:
 
 ```text
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SECRET_KEY=your-server-only-secret-key
 ADMIN_TOKEN=your-long-random-admin-token
+SESSION_SIGNING_SECRET=your-long-random-session-signing-secret
+REFRESH_TOKEN_TTL_DAYS=30
+ACCESS_TOKEN_TTL_SECONDS=900
 ```
 
-Use a Supabase secret key or legacy service-role key only in Vercel environment variables. Never put it in `public`, the browser extension, or source control; it bypasses Row Level Security.
+Use a Supabase secret key or legacy service-role key only in Vercel environment variables. Never put it in `public`, the browser extension, or source control; it bypasses Row Level Security. `SESSION_SIGNING_SECRET` must be at least 32 random characters and must remain stable across deployments.
 
 4. Deploy the folder.
 5. Open `https://your-project.vercel.app/admin`.
@@ -42,6 +45,8 @@ Run `supabase/migrate-usage-summary.sql` for the existing bigint schema. It:
 - keeps `usage_events` untouched for rollback;
 - installs the summary-only RPC and a compatibility overload for older clients;
 - uses a migration ledger so rerunning it does not backfill again.
+
+Then run `supabase/migrate-session-auth.sql`. It adds only the `sessions` table, keyed by the existing bigint `licenses.id`, so the extension can use short-lived bearer access tokens and rotating refresh tokens without changing the license schema.
 
 Do **not** run the old destructive `fix-existing-bigint.sql`; it is now only a warning file. After deployment and verification, old `usage_events` can be archived or deleted manually if you no longer need rollback data.
 

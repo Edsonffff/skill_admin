@@ -10,6 +10,9 @@ const { URL } = require("node:url");
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8787);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "dev-admin-token";
+const SESSION_SIGNING_SECRET = process.env.SESSION_SIGNING_SECRET || "local-development-session-secret-01234567890123456789";
+const REFRESH_TOKEN_TTL_DAYS = Math.max(1, Number(process.env.REFRESH_TOKEN_TTL_DAYS || 30));
+const ACCESS_TOKEN_TTL_SECONDS = Math.max(60, Number(process.env.ACCESS_TOKEN_TTL_SECONDS || 900));
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
@@ -24,7 +27,7 @@ function nowIso() {
 }
 
 function createInitialState() {
-  return { schemaVersion: 1, licenses: [], usage: [] };
+  return { schemaVersion: 1, licenses: [], usage: [], sessions: [] };
 }
 
 function id(prefix) {
@@ -41,6 +44,93 @@ function normalizeAccount(value) {
 
 function hash(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+
+function sign(value) {
+  return crypto.createHmac("sha256", SESSION_SIGNING_SECRET).update(value).digest("base64url");
+}
+
+function createAccessToken(sessionId, licenseId, expiresAt) {
+  const payload = Buffer.from(JSON.stringify({
+    sid: String(sessionId),
+    lid: String(licenseId),
+    exp: Math.floor(new Date(expiresAt).getTime() / 1000)
+  })).toString("base64url");
+  return `${payload}.${sign(payload)}`;
+}
+
+function parseAccessToken(value) {
+  const parts = String(value || "").split(".");
+  if (parts.length !== 2) return null;
+  const expected = sign(parts[0]);
+  const actual = parts[1];
+  if (expected.length !== actual.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual))) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+    return payload.sid && payload.lid && payload.exp > Math.floor(Date.now() / 1000) ? payload : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function issueLocalSession(license, deviceId) {
+  const refreshToken = crypto.randomBytes(48).toString("base64url");
+  const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 86400000).toISOString();
+  const accessExpiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000).toISOString();
+  const session = {
+    id: crypto.randomUUID(),
+    licenseId: license.id,
+    deviceIdHash: hash(deviceId),
+    refreshTokenHash: hash(refreshToken),
+    expiresAt: refreshExpiresAt,
+    revokedAt: null,
+    lastUsedAt: null
+  };
+  state.sessions.push(session);
+  return {
+    accessToken: createAccessToken(session.id, license.id, accessExpiresAt),
+    refreshToken,
+    accessTokenExpiresAt: accessExpiresAt,
+    refreshTokenExpiresAt: refreshExpiresAt
+  };
+}
+
+function localSessionError(status, reason, error) {
+  return { status, body: { ok: false, reason, error } };
+}
+
+function authenticatedLocal(request) {
+  const header = String(request.headers.authorization || "");
+  const token = parseAccessToken(header.startsWith("Bearer ") ? header.slice(7).trim() : "");
+  if (!token) return localSessionError(401, "UNAUTHORIZED", "The access session is invalid.");
+  const session = state.sessions.find(item => item.id === token.sid);
+  if (!session || session.revokedAt || String(session.licenseId) !== String(token.lid) || new Date(session.expiresAt).getTime() <= Date.now()) {
+    return localSessionError(401, "SESSION_EXPIRED", "The access session has expired.");
+  }
+  const license = findLicenseById(session.licenseId);
+  const current = licenseState(license);
+  if (current !== "active") {
+    const reason = current === "expired" ? "LICENSE_EXPIRED" : "LICENSE_LOCKED";
+    return localSessionError(403, reason, `License is ${current}.`);
+  }
+  if (!license.deviceIdHash || license.deviceIdHash !== session.deviceIdHash) {
+    return localSessionError(403, "LICENSE_LOCKED", "This device session is no longer active.");
+  }
+  return { session, license };
+}
+
+function authorizeLocalAccount(context, accountId, required) {
+  const value = normalizeAccount(accountId);
+  if (!value) {
+    if (required) return localSessionError(400, "INVALID_ACCOUNT", "The SkillRack account is required.");
+    return context;
+  }
+  if (context.license.userName && normalizeAccount(context.license.userName) !== value) {
+    return localSessionError(403, "ACCOUNT_MISMATCH", "This license is bound to a different SkillRack account.");
+  }
+  if (!context.license.userName) context.license.userName = String(accountId).trim().slice(0, 120);
+  context.license.lastUsedAt = nowIso();
+  return context;
 }
 
 function normalizeDevice(value) {
@@ -89,6 +179,7 @@ async function loadState() {
     if (!state || !Array.isArray(state.licenses) || !Array.isArray(state.usage)) {
       throw new Error("state.json has an invalid shape");
     }
+    if (!Array.isArray(state.sessions)) state.sessions = [];
     for (const license of state.licenses) {
       license.totalRuns ??= license.totalPrograms || 0;
       license.successfulRuns ??= license.solvedPrograms || 0;
@@ -209,11 +300,20 @@ async function activateLicense(body) {
   if (!license.deviceIdHash) license.deviceIdHash = hash(result.deviceId);
   license.userName = String(body.userName || license.userName || "").trim().slice(0, 120);
   license.lastUsedAt = nowIso();
+  const session = issueLocalSession(license, result.deviceId);
   await persistState();
-  return { status: 200, body: { ok: true, license: publicLicense(license), serverTime: nowIso() } };
+  return { status: 200, body: { ok: true, ...session, license: publicLicense(license), serverTime: nowIso() } };
 }
 
-async function validateLicense(body) {
+async function validateLicense(body, request) {
+  if (String(request.headers.authorization || "").startsWith("Bearer ")) {
+    const context = authenticatedLocal(request);
+    if (context.status) return context;
+    const authorized = authorizeLocalAccount(context, body.accountId, false);
+    if (authorized.status) return authorized;
+    await persistState();
+    return { status: 200, body: { ok: true, allowed: true, reason: null, serverTime: nowIso(), license: publicLicense(context.license) } };
+  }
   const result = findLicenseForClient(body);
   if (result.error) return { status: 200, body: { ok: true, allowed: false, reason: "INVALID_LICENSE", error: result.error } };
   const license = result.license;
@@ -229,10 +329,19 @@ async function validateLicense(body) {
   };
 }
 
-async function recordUsage(body) {
-  const result = findLicenseForClient(body);
-  if (result.error) return { status: 401, body: { ok: false, error: result.error } };
-  const license = result.license;
+async function recordUsage(body, request) {
+  let license;
+  if (String(request.headers.authorization || "").startsWith("Bearer ")) {
+    const context = authenticatedLocal(request);
+    if (context.status) return context;
+    const authorized = authorizeLocalAccount(context, body.accountId, true);
+    if (authorized.status) return authorized;
+    license = context.license;
+  } else {
+    const result = findLicenseForClient(body);
+    if (result.error) return { status: 401, body: { ok: false, error: result.error } };
+    license = result.license;
+  }
   if (licenseState(license) !== "active") return { status: 403, body: { ok: false, error: "License is not active." } };
   const event = String(body.event || "").trim();
   const resultName = String(body.result || "").trim();
@@ -251,6 +360,44 @@ async function recordUsage(body) {
     successfulRuns: license.successfulRuns,
     lastActivityAt: license.lastActivityAt
   } } };
+}
+
+async function refreshLocal(body) {
+  const refreshToken = String(body.refreshToken || "").trim();
+  const deviceId = normalizeDevice(body.deviceId);
+  const session = state.sessions.find(item => item.refreshTokenHash === hash(refreshToken));
+  if (!refreshToken || !deviceId || !session || session.revokedAt || new Date(session.expiresAt).getTime() <= Date.now()) {
+    return localSessionError(401, "SESSION_EXPIRED", "The refresh session has expired.");
+  }
+  const license = findLicenseById(session.licenseId);
+  const current = licenseState(license);
+  if (current !== "active" || session.deviceIdHash !== hash(deviceId) || license.deviceIdHash !== session.deviceIdHash) {
+    return localSessionError(403, current === "expired" ? "LICENSE_EXPIRED" : "LICENSE_LOCKED", "This device session is no longer active.");
+  }
+  const nextRefreshToken = crypto.randomBytes(48).toString("base64url");
+  const refreshExpiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 86400000).toISOString();
+  const accessExpiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000).toISOString();
+  session.refreshTokenHash = hash(nextRefreshToken);
+  session.expiresAt = refreshExpiresAt;
+  session.lastUsedAt = nowIso();
+  await persistState();
+  return { status: 200, body: {
+    ok: true,
+    accessToken: createAccessToken(session.id, license.id, accessExpiresAt),
+    refreshToken: nextRefreshToken,
+    accessTokenExpiresAt: accessExpiresAt,
+    refreshTokenExpiresAt: refreshExpiresAt
+  } };
+}
+
+async function revokeLocal(body) {
+  const refreshToken = String(body.refreshToken || "").trim();
+  const session = state.sessions.find(item => item.refreshTokenHash === hash(refreshToken));
+  if (session && !session.revokedAt) {
+    session.revokedAt = nowIso();
+    await persistState();
+  }
+  return { status: 200, body: { ok: true } };
 }
 
 function adminStats() {
@@ -359,12 +506,22 @@ async function handleRequest(request, response) {
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/license/validate") {
-    const result = await validateLicense(await readJson(request));
+    const result = await validateLicense(await readJson(request), request);
     sendJson(response, result.status, result.body);
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/license/usage") {
-    const result = await recordUsage(await readJson(request));
+    const result = await recordUsage(await readJson(request), request);
+    sendJson(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/auth/refresh") {
+    const result = await refreshLocal(await readJson(request));
+    sendJson(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/auth/revoke") {
+    const result = await revokeLocal(await readJson(request));
     sendJson(response, result.status, result.body);
     return;
   }
