@@ -1,13 +1,13 @@
 # Local license and admin dashboard
 
-This folder contains the Vercel-hosted license API and admin dashboard used by the browser extension. The API stores licenses and usage events in Supabase. `server.cjs` is retained as a local filesystem-only development fallback; Vercel uses the files inside `api`.
+This folder contains the Vercel-hosted license API and admin dashboard used by the browser extension. The API stores license records and three usage totals in Supabase. It no longer writes a row for every run. `server.cjs` is retained as a local filesystem-only development fallback; Vercel uses the files inside `api`.
 
 ## Deploy to Vercel
 
 Set the Vercel project root to this `admin-dashboard` folder. Vercel automatically deploys functions inside the root `api` directory and serves the static files in `public`.
 
 1. Create a Supabase project.
-2. Open Supabase SQL Editor and run `supabase/schema.sql`.
+2. For a fresh project, open Supabase SQL Editor and run `supabase/schema.sql`. For the existing project shown in the screenshot, run `supabase/migrate-usage-summary.sql` instead. Back up first and pause the old usage writer during cutover.
 3. Create Vercel environment variables:
 
 ```text
@@ -26,15 +26,26 @@ If you later use a custom domain instead of `*.vercel.app`, add that domain to `
 
 The extension talks to the Vercel API, while only the Vercel API talks to Supabase.
 
-### If the dashboard says `public.usage_events` is missing
+### Existing database migration
 
-Run this check in Supabase SQL Editor:
+Run this check before migration:
 
 ```sql
-select to_regclass('public.licenses'), to_regclass('public.usage_events');
+select to_regclass('public.licenses'), to_regclass('public.usage_events'),
+       (select data_type from information_schema.columns where table_schema = 'public' and table_name = 'licenses' and column_name = 'id') as license_id_type;
 ```
 
-If either value is `null`, run `supabase/schema.sql` for a fresh database. If your existing `licenses.id` column is `int8`/`bigint` like the original table, run `supabase/fix-existing-bigint.sql` instead. If both tables exist, make sure the `public` schema is exposed in Supabase's Data API settings, then refresh the schema cache:
+Run `supabase/migrate-usage-summary.sql` for the existing bigint schema. It:
+
+- adds `total_runs`, `successful_runs`, and `last_activity_at` to `licenses`;
+- backfills from existing `usage_events` without double-counting counters already ahead;
+- keeps `usage_events` untouched for rollback;
+- installs the summary-only RPC and a compatibility overload for older clients;
+- uses a migration ledger so rerunning it does not backfill again.
+
+Do **not** run the old destructive `fix-existing-bigint.sql`; it is now only a warning file. After deployment and verification, old `usage_events` can be archived or deleted manually if you no longer need rollback data.
+
+After applying SQL, make sure the `public` schema is exposed in Supabase's Data API settings, then refresh the schema cache:
 
 ```sql
 NOTIFY pgrst, 'reload schema';
@@ -66,7 +77,11 @@ The default token is `dev-admin-token` for local testing only. The server binds 
 2. Copy the generated key into the extension popup.
 3. Activate it with the license key only. When the user opens a SkillRack page, the extension reads the visible logged-in account chip and binds the license to that account.
 4. The extension validates the account-bound license before opening the helper and before protected actions. A different SkillRack account is rejected.
-5. Successful and failed extension Run actions are recorded as `programsSolved` and `programsDone`.
+5. Successful and failed extension Run actions update `totalRuns`, `successfulRuns`, and `lastActivityAt` on the matching license. Run ID and language are accepted only for client compatibility and are not stored.
 6. Lock or unlock a license from the dashboard. A locked license is blocked on the next validation.
 
 Runtime state is intentionally excluded from source control. Do not put Gemini API keys, Supabase secret keys, or admin tokens in this folder.
+
+### Usage semantics
+
+The dashboard shows total accepted runs, successful runs, and last activity per license. Repeated accepted reports count again because no run IDs are stored. The endpoint is not idempotent; do not automatically retry an ambiguous response. Missing reports caused by a client/network failure are not recoverable from history after cutover.

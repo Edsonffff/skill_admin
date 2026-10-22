@@ -29,8 +29,8 @@
     setError(dashboardError, "");
     const [stats, licenses] = await Promise.all([api("/api/admin/stats"), api("/api/admin/licenses")]);
     const totals = stats.totals;
-    document.querySelector("#programs-done").textContent = totals.programsDone;
-    document.querySelector("#programs-solved").textContent = totals.programsSolved;
+    document.querySelector("#programs-done").textContent = totals.totalRuns;
+    document.querySelector("#programs-solved").textContent = totals.successfulRuns;
     document.querySelector("#active-licenses").textContent = totals.activeLicenses;
     document.querySelector("#locked-licenses").textContent = totals.lockedLicenses;
     const body = document.querySelector("#licenses-body");
@@ -63,9 +63,9 @@
         `••••-${license.licenseKeySuffix}`,
         status,
         formatDate(license.expiresAt),
-        license.totalPrograms,
-        license.solvedPrograms,
-        formatDate(license.lastUsedAt),
+        license.totalRuns,
+        license.successfulRuns,
+         formatDate(license.lastActivityAt),
         action
       ];
       for (const value of cells) {

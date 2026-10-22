@@ -15,7 +15,7 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = path.join(ROOT, "data");
 const STATE_FILE = path.join(DATA_DIR, "state.json");
 const MAX_BODY_BYTES = 64 * 1024;
-const ALLOWED_EVENTS = new Set(["run", "ai_request", "insert"]);
+const ALLOWED_RESULTS = new Set(["success", "failure"]);
 let state;
 let writeQueue = Promise.resolve();
 
@@ -57,8 +57,9 @@ function publicLicense(license) {
     createdAt: license.createdAt,
     expiresAt: license.expiresAt,
     lastUsedAt: license.lastUsedAt || null,
-    totalPrograms: license.totalPrograms || 0,
-    solvedPrograms: license.solvedPrograms || 0,
+    totalRuns: Number(license.totalRuns ?? license.totalPrograms ?? 0),
+    successfulRuns: Number(license.successfulRuns ?? license.solvedPrograms ?? 0),
+    lastActivityAt: license.lastActivityAt || null,
     activationCount: license.deviceIdHash ? 1 : 0,
     lockReason: license.lockReason || ""
   };
@@ -87,6 +88,11 @@ async function loadState() {
     state = JSON.parse(await fsp.readFile(STATE_FILE, "utf8"));
     if (!state || !Array.isArray(state.licenses) || !Array.isArray(state.usage)) {
       throw new Error("state.json has an invalid shape");
+    }
+    for (const license of state.licenses) {
+      license.totalRuns ??= license.totalPrograms || 0;
+      license.successfulRuns ??= license.solvedPrograms || 0;
+      license.lastActivityAt ??= null;
     }
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
@@ -228,57 +234,36 @@ async function recordUsage(body) {
   if (result.error) return { status: 401, body: { ok: false, error: result.error } };
   const license = result.license;
   if (licenseState(license) !== "active") return { status: 403, body: { ok: false, error: "License is not active." } };
-  const runId = String(body.runId || "").trim();
   const event = String(body.event || "").trim();
-  if (!runId || !ALLOWED_EVENTS.has(event)) return { status: 400, body: { ok: false, error: "runId and a supported event are required." } };
-  const duplicate = state.usage.find(item => item.licenseId === license.id && item.runId === runId);
-  if (duplicate) return { status: 200, body: { ok: true, duplicate: true, usage: publicLicense(license) } };
-  const resultName = String(body.result || "unknown");
-  const usage = {
-    id: id("usage"),
-    licenseId: license.id,
-    runId,
-    event,
-    result: resultName,
-    language: String(body.language || "unknown").slice(0, 80),
-    occurredAt: nowIso()
-  };
-  state.usage.push(usage);
-  if (event === "run") {
-    license.totalPrograms = (license.totalPrograms || 0) + 1;
-    if (resultName === "success") license.solvedPrograms = (license.solvedPrograms || 0) + 1;
+  const resultName = String(body.result || "").trim();
+  if (event !== "run" || !ALLOWED_RESULTS.has(resultName)) {
+    return { status: 400, body: { ok: false, error: "event must be run and result must be success or failure." } };
   }
-  license.lastUsedAt = usage.occurredAt;
+  // Keep the local fallback's semantics aligned with Vercel: no per-run history.
+  const activity = nowIso();
+  license.totalRuns = (license.totalRuns || 0) + 1;
+  if (resultName === "success") license.successfulRuns = (license.successfulRuns || 0) + 1;
+  license.lastActivityAt = activity;
+  license.lastUsedAt = activity;
   await persistState();
-  return { status: 200, body: { ok: true, duplicate: false, usage: publicLicense(license) } };
+  return { status: 200, body: { ok: true, usage: {
+    totalRuns: license.totalRuns,
+    successfulRuns: license.successfulRuns,
+    lastActivityAt: license.lastActivityAt
+  } } };
 }
 
 function adminStats() {
   const licenses = state.licenses.map(publicLicense);
-  const byEvent = {};
-  const byDay = {};
-  for (const item of state.usage) {
-    byEvent[item.event] = (byEvent[item.event] || 0) + 1;
-    const day = item.occurredAt.slice(0, 10);
-    byDay[day] ||= { date: day, events: 0, programsDone: 0, programsSolved: 0 };
-    byDay[day].events += 1;
-    if (item.event === "run") {
-      byDay[day].programsDone += 1;
-      if (item.result === "success") byDay[day].programsSolved += 1;
-    }
-  }
   return {
     totals: {
       licenses: licenses.length,
       activeLicenses: licenses.filter(item => item.status === "active").length,
       lockedLicenses: licenses.filter(item => item.status === "locked").length,
       expiredLicenses: licenses.filter(item => item.status === "expired").length,
-      programsDone: licenses.reduce((sum, item) => sum + item.totalPrograms, 0),
-      programsSolved: licenses.reduce((sum, item) => sum + item.solvedPrograms, 0),
-      usageEvents: state.usage.length
-    },
-    byEvent,
-    byDay: Object.values(byDay).sort((a, b) => a.date.localeCompare(b.date))
+      totalRuns: licenses.reduce((sum, item) => sum + item.totalRuns, 0),
+      successfulRuns: licenses.reduce((sum, item) => sum + item.successfulRuns, 0)
+    }
   };
 }
 
@@ -314,8 +299,9 @@ async function handleAdmin(request, response, url) {
       expiresAt,
       lastUsedAt: null,
       deviceIdHash: "",
-      totalPrograms: 0,
-      solvedPrograms: 0,
+      totalRuns: 0,
+      successfulRuns: 0,
+      lastActivityAt: null,
       lockReason: ""
     };
     state.licenses.push(license);

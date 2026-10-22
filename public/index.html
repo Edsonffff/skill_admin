@@ -29,8 +29,8 @@
 
     <div id="dashboard" hidden>
       <section class="stats-grid">
-        <article class="stat card"><span>Programs done</span><strong id="programs-done">0</strong></article>
-        <article class="stat card"><span>Programs solved</span><strong id="programs-solved">0</strong></article>
+        <article class="stat card"><span>Total runs</span><strong id="programs-done">0</strong></article>
+        <article class="stat card"><span>Successful runs</span><strong id="programs-solved">0</strong></article>
         <article class="stat card"><span>Active licenses</span><strong id="active-licenses">0</strong></article>
         <article class="stat card"><span>Locked licenses</span><strong id="locked-licenses">0</strong></article>
       </section>
@@ -47,7 +47,7 @@
 
       <section class="card">
         <div class="section-heading"><div><h2>Licenses</h2><p class="subtle">Locking a license blocks the extension the next time it validates.</p></div><button id="refresh" class="secondary">Refresh</button></div>
-        <div class="table-wrap"><table><thead><tr><th>User</th><th>Key</th><th>Status</th><th>Expires</th><th>Done</th><th>Solved</th><th>Last used</th><th>Action</th></tr></thead><tbody id="licenses-body"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>User</th><th>Key</th><th>Status</th><th>Expires</th><th>Runs</th><th>Successful</th><th>Last activity</th><th>Action</th></tr></thead><tbody id="licenses-body"></tbody></table></div>
       </section>
       <p id="dashboard-error" class="error"></p>
     </div>

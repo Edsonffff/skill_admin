@@ -8,5 +8,8 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0"
+  },
+  "scripts": {
+    "check": "node --check lib/server.js && node --check lib/handler.js && node --check server.cjs && node --check api/license/usage.js && node --check api/license/validate.js && node --check api/admin/stats.js && node --check api/admin/licenses.js && node --check public/admin.js"
   }
 }
